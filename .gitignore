@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Virtual environment
+env/
+venv/
+
+stratergy.txt
+
+alembic.ini
+alembic/
+backup/
+
+test.ipynb
+# Database
+expenses.db
+
+# Logs and temporary files
+log.txt
+error.txt
+*.log
+*.tmp
+
+# Environment variables
+.env
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDEs
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# OS generated files
+.DS_Store
+Thumbs.db

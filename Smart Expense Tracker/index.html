@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExpenAI - Smart Expense Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --background: #101010;
+            --surface: #1C1C1E;
+            --text-primary: #FFFFFF;
+            --text-secondary: #A0A0A0;
+            --accent: #00E5C0;
+            --accent-light: rgba(0, 229, 192, 0.1);
+            --accent-text: #000000;
+            --glass-bg: rgba(28, 28, 30, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --hover-bg: rgba(255, 255, 255, 0.05);
+            --border-color: rgba(255, 255, 255, 0.15);
+            --error-color: #f87171;
+            --success-color: #4ade80;
+            --scrollbar-track: rgba(255, 255, 255, 0.05);
+            --scrollbar-thumb: rgba(0, 229, 192, 0.5);
+            --scrollbar-thumb-hover: #00E5C0;
+            --chart-color: #A0A0A0;
+        }
+
+        [data-theme='light'] {
+            --background: #F7F7F7;
+            --surface: #FFFFFF;
+            --text-primary: #121212;
+            --text-secondary: #616161;
+            --accent: #00BFA5;
+            --accent-light: rgba(0, 191, 165, 0.1);
+            --accent-text: #FFFFFF;
+            --glass-bg: rgba(255, 255, 255, 0.8);
+            --glass-border: rgba(0, 0, 0, 0.08);
+            --hover-bg: rgba(0, 0, 0, 0.05);
+            --border-color: rgba(0, 0, 0, 0.1);
+            --error-color: #ef4444;
+            --success-color: #22c55e;
+            --scrollbar-track: rgba(0, 0, 0, 0.05);
+            --scrollbar-thumb: rgba(0, 191, 165, 0.6);
+            --scrollbar-thumb-hover: #00BFA5;
+            --chart-color: #616161;
+        }
+        
+        body {
+            font-family: 'Manrope', sans-serif;
+            background-color: var(--background);
+            color: var(--text-primary);
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+        .glassmorphism {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            transition: background 0.3s ease, border-color 0.3s ease;
+        }
+        .table-row-hover:hover {
+            background-color: var(--hover-bg);
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--scrollbar-track); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+        .toast {
+            visibility: hidden;
+            min-width: 250px;
+            margin-left: -125px;
+            color: var(--accent-text);
+            text-align: center;
+            border-radius: 12px;
+            padding: 16px;
+            position: fixed;
+            z-index: 100;
+            left: 50%;
+            bottom: 30px;
+            font-size: 16px;
+            font-weight: 500;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+        }
+        .toast.show {
+            visibility: visible;
+            opacity: 1;
+            bottom: 50px;
+            transform: translateY(0);
+        }
+        .toast.success { background-color: var(--success-color); }
+        .toast.error { background-color: var(--error-color); }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+    </style>
+</head>
+<body class="antialiased">
+
+    <div id="app" class="flex min-h-screen max-h-screen overflow-hidden">
+        <!-- App content will be rendered here by JavaScript -->
+    </div>
+    <div id="toast-container"></div>
+
+    <script type="module">
+        // --- Application State ---
+        let state = {
+            page: 'dashboard',
+            isModalOpen: false,
+            isOnboardingModalOpen: false,
+            isProfileEditing: false,
+            expenses: [],
+            userName: 'Guest',
+            userId: localStorage.getItem('userId'),
+            authToken: localStorage.getItem('authToken'),
+            userProfile: null,
+            loading: true,
+            isLoggedIn: false,
+            theme: localStorage.getItem('theme') || 'dark',
+            lineChart: null,
+            pieChart: null,
+            barChart: null,
+            chatHistory: [{ role: 'ai', content: "Hello! How can I help you? Ask me about your spending or tell me about a new transaction." }],
+            editingExpenseId: null
+        };
+        
+        document.documentElement.dataset.theme = state.theme;
+
+        // --- API Configuration ---
+        const API_BASE_URL = 'http://127.0.0.1:8000';
+
+        // --- API Helper ---
+        async function apiCall(endpoint, method = 'GET', body = null, isFormData = false) {
+            const headers = { 'Accept': 'application/json' };
+            if (state.authToken) headers['Authorization'] = `Bearer ${state.authToken}`;
+            if (!isFormData && body) headers['Content-Type'] = 'application/json';
+
+            const config = { method, headers, body: isFormData ? body : (body ? JSON.stringify(body) : null) };
+
+            try {
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
+                const responseText = await response.text();
+                const responseData = responseText ? JSON.parse(responseText) : {};
+
+                if (!response.ok) {
+                    const errorDetails = responseData.error?.details || responseData.message || responseData.detail || 'An unknown server error occurred.';
+                    throw new Error(typeof errorDetails === 'object' ? JSON.stringify(errorDetails) : errorDetails);
+                }
+                return responseData.data || responseData;
+            } catch (error) {
+                console.error(`API call to ${endpoint} failed:`, error);
+                showToast(error.message, true);
+                throw error;
+            }
+        }
+
+        // --- Icons ---
+        const ICONS = {
+            logo: `<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line>`,
+            dashboard: `<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>`,
+            analytics: `<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>`,
+            chat: `<path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/>`,
+            add: `<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>`,
+            close: `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`,
+            upload: `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>`,
+            send: `<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>`,
+            sun: `<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.93 19.07 1.41-1.41"/><path d="m17.66 6.34 1.41-1.41"/>`,
+            moon: `<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>`,
+            user: `<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`,
+            dollar: `<line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>`,
+            hash: `<line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>`,
+            tag: `<path d="M12.586 2.586a2 2 0 0 0-2.828 0L2 10.172V14h3.828l7.586-7.586a2 2 0 0 0 0-2.828Z"/><path d="M7 7h.01"/>`,
+            logout: `<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>`,
+            dots: `<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>`,
+            settings: `<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>`,
+            chevronDown: `<polyline points="6 9 12 15 18 9"></polyline>`,
+            target: `<circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle>`,
+            calendar: `<rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>`,
+            trendingUp: `<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline>`
+        };
+        const getIcon = (name, className) => `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${className}">${ICONS[name]}</svg>`;
+
+        // --- Helper Functions ---
+        const getFormattedDate = () => new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        
+        function showToast(message, isError = false) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.textContent = message;
+            toast.className = `toast ${isError ? 'error' : 'success'}`;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.classList.add('show');
+            }, 10);
+            
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 400);
+            }, 3000);
+        }
+
+        function simpleMarkdownToHTML(text) {
+            if (!text) return '';
+            return text
+                .replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>') // Bold
+                .replace(/\* ([^\n]+)/g, '<li class="ml-4 list-disc">$1</li>')   // List items
+                .replace(/\n/g, '<br />'); // Newlines
+        }
+
+        // --- Render Functions ---
+        
+        function render() {
+            const appContainer = document.getElementById('app');
+            if (state.loading) {
+                appContainer.innerHTML = `<div class="w-full flex items-center justify-center h-screen bg-[var(--background)]">
+                    <div class="animate-spin rounded-full h-32 w-32 border-t-2 border-b-2 border-[var(--accent)]"></div>
+                </div>`;
+                return;
+            }
+
+            if (!state.isLoggedIn) {
+                appContainer.innerHTML = renderAuthPage();
+                attachAuthEventListeners();
+            } else {
+                let pageContent = '';
+                switch (state.page) {
+                    case 'analytics': pageContent = renderAnalyticsPage(); break;
+                    case 'chat': pageContent = renderChatPage(); break;
+                    case 'profile': pageContent = renderProfilePage(); break;
+                    default: pageContent = renderDashboardPage();
+                }
+
+                const modal = state.isModalOpen ? renderAddExpenseModal() : '';
+                const onboardingModal = state.isOnboardingModalOpen ? renderOnboardingModal() : '';
+
+                appContainer.innerHTML = `
+                    ${renderSidebar()}
+                    <main class="flex-1 p-4 sm:p-6 flex flex-col overflow-hidden">
+                        ${pageContent}
+                    </main>
+                    ${modal}
+                    ${onboardingModal}
+                `;
+                
+                if (state.page === 'analytics') renderAnalyticsCharts();
+                if (state.page === 'dashboard' && state.expenses.length > 0) renderDashboardCharts();
+                
+                attachAppEventListeners();
+                if (state.isOnboardingModalOpen) attachOnboardingModalEventListeners();
+            }
+        }
+
+        function attachOnboardingModalEventListeners() {
+            document.getElementById('onboarding-save-btn').onclick = handleOnboardingSave;
+            document.getElementById('onboarding-skip-btn').onclick = handleOnboardingSkip;
+            document.getElementById('onboarding-modal-backdrop').onclick = (e) => { 
+                if(e.target.id === 'onboarding-modal-backdrop') {
+                    // Prevent closing by clicking outside if not skipped
+                    // This ensures user makes a choice or skips explicitly
+                }
+            };
+        }
+
+        async function handleOnboardingSave() {
+            const savingsGoal = parseFloat(document.getElementById('onboarding-savings-goal').value) || 0;
+            const financialGoals = document.getElementById('onboarding-financial-goals').value;
+            try {
+                await apiCall('/me/profile', 'PUT', {
+                    savings_goal: savingsGoal,
+                    financial_goals: financialGoals,
+                    has_completed_onboarding: true
+                });
+                state.userProfile.savings_goal = savingsGoal;
+                state.userProfile.financial_goals = financialGoals;
+                state.userProfile.has_completed_onboarding = true;
+                state.isOnboardingModalOpen = false;
+                showToast("Goals saved successfully!");
+                render();
+            } catch (error) {
+                showToast(`Failed to save goals: ${error.message}`, true);
+            }
+        }
+
+        async function handleOnboardingSkip() {
+            try {
+                await apiCall('/me/profile', 'PUT', { has_completed_onboarding: true });
+                state.userProfile.has_completed_onboarding = true;
+                state.isOnboardingModalOpen = false;
+                showToast("Onboarding skipped.");
+                render();
+            } catch (error) {
+                showToast(`Failed to skip onboarding: ${error.message}`, true);
+            }
+        }
+
+        function renderOnboardingModal() {
+            return `
+                <div id="onboarding-modal-backdrop" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 fade-in">
+                    <div class="glassmorphism w-full max-w-md p-8 m-4 rounded-2xl text-center">
+                        <h2 class="text-3xl font-bold mb-4">Welcome to ExpenAI!</h2>
+                        <p class="text-[var(--text-secondary)] mb-6">Let's set up your financial journey. You can always update these later in your profile.</p>
+                        
+                        <div class="space-y-4 text-left">
+                            <div>
+                                <label for="onboarding-savings-goal" class="block text-sm font-medium text-[var(--text-secondary)]">Monthly Savings Goal ($)</label>
+                                <input type="number" id="onboarding-savings-goal" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" placeholder="e.g., 500" value="${state.userProfile?.savings_goal || ''}">
+                            </div>
+                            <div>
+                                <label for="onboarding-financial-goals" class="block text-sm font-medium text-[var(--text-secondary)]">Long-term Financial Goals</label>
+                                <textarea id="onboarding-financial-goals" rows="3" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" placeholder="e.g., Save for a down payment, pay off debt">${state.userProfile?.financial_goals || ''}</textarea>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-end gap-4 mt-8">
+                            <button id="onboarding-skip-btn" class="bg-transparent border border-[var(--border-color)] text-[var(--text-primary)] font-bold py-2 px-4 rounded-xl hover:bg-[var(--hover-bg)] transition-colors">Skip for now</button>
+                            <button id="onboarding-save-btn" class="bg-[var(--accent)] text-[var(--accent-text)] font-bold py-2 px-4 rounded-xl hover:opacity-90 transition-colors shadow-lg shadow-[var(--accent-light)]">Save Goals</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderAuthPage(isLogin = true, message = null, isError = true) {
+            const formTitle = isLogin ? 'Welcome Back!' : 'Create an Account';
+            const formFields = `
+                ${!isLogin ? `
+                    <div class="relative"><input id="name" type="text" placeholder="Full Name" required class="w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-all"/></div>
+                    <div class="relative"><input id="username" type="text" placeholder="Username" required class="w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-all"/></div>` : ''}
+                <div class="relative"><input id="login" type="text" placeholder="Email or Username" required class="w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-all"/></div>
+                <div class="relative"><input id="password" type="password" placeholder="Password" required class="w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-all"/></div>`;
+            const submitButtonText = isLogin ? 'Login' : 'Register';
+            const toggleText = isLogin ? "Don't have an account? Register" : "Already have an account? Login";
+
+            return `
+                <div class="w-full flex items-center justify-center p-4">
+                    <div class="w-full max-w-md glassmorphism p-8 rounded-2xl space-y-6">
+                        <div class="text-center">
+                            <h1 class="text-4xl font-bold tracking-tight">${formTitle}</h1>
+                            <p class="text-[var(--text-secondary)] mt-2">Enter your details to continue</p>
+                        </div>
+                        <form id="auth-form" class="space-y-4">
+                            ${formFields}
+                            ${message ? `<p class="text-sm ${isError ? 'text-[var(--error-color)]' : 'text-[var(--success-color)]'}">${message}</p>` : ''}
+                            <button type="submit" class="w-full bg-[var(--accent)] text-[var(--accent-text)] font-bold py-3 px-6 rounded-xl hover:opacity-90 transition-all duration-300 shadow-lg shadow-[var(--accent-light)]">
+                                ${submitButtonText}
+                            </button>
+                        </form>
+                        <button id="auth-toggle" class="w-full text-center text-sm text-[var(--accent)] hover:underline">${toggleText}</button>
+                    </div>
+                </div>`;
+        }
+        
+        function renderSidebar() {
+            const navItems = [
+                { id: 'dashboard', name: 'Dashboard', icon: 'dashboard' },
+                { id: 'analytics', name: 'Analytics', icon: 'analytics' },
+                { id: 'chat', name: 'AI Chat', icon: 'chat' },
+                { id: 'profile', name: 'Profile', icon: 'settings'},
+            ];
+            const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase() : 'G';
+
+            return `
+                <aside class="w-16 sm:w-64 p-2 sm:p-4 flex flex-col justify-between glassmorphism m-2 sm:m-3 mr-0 rounded-2xl">
+                    <div>
+                        <div class="flex items-center space-x-2 text-2xl font-bold p-2">
+                            ${getIcon('logo', 'text-[var(--accent)] w-8 h-8')}
+                            <span class="hidden sm:inline tracking-tighter">ExpenAI</span>
+                        </div>
+                        <nav class="mt-8">
+                            <ul class="space-y-2">
+                                ${navItems.map(item => `
+                                    <li>
+                                        <button data-page="${item.id}" class="nav-button w-full flex items-center justify-center sm:justify-start p-3 rounded-xl transition-all duration-300 ${state.page === item.id ? 'bg-[var(--accent)] text-[var(--accent-text)] font-bold' : 'hover:bg-[var(--hover-bg)]'}">
+                                            ${getIcon(item.icon, 'w-6 h-6 sm:mr-3')}
+                                            <span class="hidden sm:inline">${item.name}</span>
+                                        </button>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        </nav>
+                    </div>
+                    <div>
+                         <button id="profile-button" data-page="profile" class="hidden sm:flex items-center gap-3 p-3 rounded-xl border border-transparent mb-2 w-full hover:bg-[var(--hover-bg)] transition-colors">
+                            <div class="w-10 h-10 rounded-full bg-[var(--accent)] flex items-center justify-center text-[var(--accent-text)] font-bold text-lg">${getInitials(state.userName)}</div>
+                            <div class="overflow-hidden"><p class="font-bold text-sm truncate">${state.userName || 'User'}</p><p class="text-xs text-[var(--text-secondary)] truncate">${state.userProfile?.email || 'No email'}</p></div>
+                        </button>
+                         <button id="theme-toggle" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-xl hover:bg-[var(--hover-bg)] transition-all duration-300">
+                            ${getIcon(state.theme === 'dark' ? 'sun' : 'moon', 'w-6 h-6 sm:mr-3')}
+                            <span class="hidden sm:inline">Toggle Theme</span>
+                        </button>
+                         <button id="logout-btn" class="w-full flex items-center justify-center sm:justify-start p-3 rounded-xl hover:bg-[var(--hover-bg)] transition-all duration-300">
+                            ${getIcon('logout', 'w-6 h-6 sm:mr-3')}
+                            <span class="hidden sm:inline">Logout</span>
+                        </button>
+                    </div>
+                </aside>
+            `;
+        }
+
+        function renderDashboardPage() {
+            const expenses = state.expenses;
+            const totalSpent = expenses.reduce((sum, e) => sum + e.amount, 0);
+            const savingsGoal = state.userProfile?.savings_goal || 0;
+            const topCategory = expenses.length > 0 ? Object.entries(expenses.reduce((acc, e) => {
+                acc[e.category] = (acc[e.category] || 0) + e.amount; return acc;
+            }, {})).sort((a, b) => b[1] - a[1])[0][0] : 'None';
+            
+            return `
+                <div class="space-y-4 fade-in h-full overflow-y-auto">
+                    <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                             <h1 class="text-4xl font-extrabold tracking-tight">Welcome Back, ${state.userName}!</h1>
+                             <p class="text-[var(--text-secondary)]">${getFormattedDate()}</p>
+                        </div>
+                        <button id="open-modal-btn" class="w-full sm:w-auto flex items-center justify-center bg-[var(--accent)] text-[var(--accent-text)] font-bold py-3 px-6 rounded-xl hover:opacity-90 transition-all duration-300 shadow-lg shadow-[var(--accent-light)]">
+                            ${getIcon('add', 'w-6 h-6 mr-2')}<span>Add Expense</span>
+                        </button>
+                    </header>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div class="glassmorphism p-6 rounded-2xl flex items-center gap-4 hover:border-[var(--accent)] transition-all"><div class="p-3 rounded-full bg-[var(--accent-light)] text-[var(--accent)]">${getIcon('dollar', 'w-8 h-8')}</div><div><h3 class="text-[var(--text-secondary)] text-md">Total Spent</h3><p class="text-3xl font-bold">$${totalSpent.toFixed(2)}</p></div></div>
+                        <div class="glassmorphism p-6 rounded-2xl flex items-center gap-4 hover:border-[var(--accent)] transition-all"><div class="p-3 rounded-full bg-[var(--accent-light)] text-[var(--accent)]">${getIcon('hash', 'w-8 h-8')}</div><div><h3 class="text-[var(--text-secondary)] text-md">Transactions</h3><p class="text-3xl font-bold">${expenses.length}</p></div></div>
+                        <div class="glassmorphism p-6 rounded-2xl flex items-center gap-4 hover:border-[var(--accent)] transition-all"><div class="p-3 rounded-full bg-[var(--accent-light)] text-[var(--accent)]">${getIcon('tag', 'w-8 h-8')}</div><div><h3 class="text-[var(--text-secondary)] text-md">Top Category</h3><p class="text-3xl font-bold">${topCategory}</p></div></div>
+                        <div class="glassmorphism p-6 rounded-2xl flex items-center gap-4 hover:border-[var(--accent)] transition-all"><div class="p-3 rounded-full bg-[var(--accent-light)] text-[var(--accent)]">${getIcon('target', 'w-8 h-8')}</div><div><h3 class="text-[var(--text-secondary)] text-md">Savings Goal</h3><p class="text-3xl font-bold">$${savingsGoal.toFixed(2)}</p></div></div>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-2 glassmorphism p-6 rounded-2xl">
+                            <h2 class="text-2xl font-bold mb-4">Recent Expenses</h2>
+                            <div class="overflow-auto" style="max-height: 350px;">
+                                <table class="w-full text-left">
+                                    <thead><tr class="border-b border-[var(--border-color)]">${['Date', 'Name', 'Category', 'Amount', 'Actions'].map(h => `<th class="p-4 font-semibold text-sm text-[var(--text-secondary)] min-w-[100px]">${h}</th>`).join('')}</tr></thead>
+                                    <tbody id="expenses-table-body">
+                                        ${expenses.length > 0 ? expenses.map(exp => {
+                                            if (state.editingExpenseId === exp.id) {
+                                                return `
+                                                    <tr class="border-b border-[var(--hover-bg)]">
+                                                        <td class="p-2"><input type="date" id="edit-date-${exp.id}" value="${exp.date}" class="w-full bg-transparent p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></td>
+                                                        <td class="p-2"><input type="text" id="edit-name-${exp.id}" value="${exp.expence_name}" class="w-full bg-transparent p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></td>
+                                                        <td class="p-2"><input type="text" id="edit-category-${exp.id}" value="${exp.category}" class="w-full bg-transparent p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></td>
+                                                        <td class="p-2"><input type="number" id="edit-amount-${exp.id}" value="${exp.amount.toFixed(2)}" class="w-full bg-transparent p-2 rounded-md focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></td>
+                                                        <td class="p-2 flex gap-2">
+                                                            <button class="save-expense-btn p-2 rounded-md bg-green-500 text-white" data-id="${exp.id}">Save</button>
+                                                            <button class="cancel-edit-btn p-2 rounded-md bg-gray-500 text-white" data-id="${exp.id}">Cancel</button>
+                                                        </td>
+                                                    </tr>`;
+                                            }
+                                            return `
+                                            <tr class="border-b border-[var(--hover-bg)] table-row-hover transition-colors duration-200">
+                                                <td class="p-4">${new Date(exp.date).toLocaleDateString('en-US', {month: 'short', day: 'numeric'})}</td>
+                                                <td class="p-4 font-bold">${exp.expence_name}</td>
+                                                <td class="p-4"><span class="px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap bg-[var(--accent-light)] text-[var(--accent)]">${exp.category}</span></td>
+                                                <td class="p-4 text-lg font-bold">${exp.amount.toFixed(2)}</td>
+                                                <td class="p-4">
+                                                    <button class="edit-expense-btn p-2 rounded-md hover:bg-[var(--hover-bg)]" data-id="${exp.id}">Edit</button>
+                                                </td>
+                                            </tr>`;
+                                        }).join('') : `<tr><td colspan="5" class="text-center p-8 text-[var(--text-secondary)]">No expenses yet. Add one to get started!</td></tr>`}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="glassmorphism p-6 rounded-2xl flex flex-col"><h3 class="text-xl font-bold mb-4">Spending Overview</h3><div class="relative flex-1 min-h-[250px]"><canvas id="dashboardPieChart"></canvas></div></div>
+                    </div>
+                </div>`;
+        }
+        
+        function renderAnalyticsPage() {
+             return `
+                <div class="space-y-6 fade-in h-full flex flex-col">
+                    <header class="flex flex-col sm:flex-row justify-between items-center gap-4">
+                        <h1 class="text-4xl font-extrabold tracking-tight">Financial Analytics</h1>
+                        <div class="relative">
+                             <select id="analytics-filter" class="bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 appearance-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                                <option value="7">Last 7 Days</option>
+                                <option value="30" selected>Last 30 Days</option>
+                                <option value="90">Last 90 Days</option>
+                                <option value="365">Last Year</option>
+                            </select>
+                        </div>
+                    </header>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div class="glassmorphism p-6 rounded-2xl"><h3 class="text-md text-[var(--text-secondary)] mb-2">Total Expenses</h3><p class="text-4xl font-bold">$${state.expenses.reduce((s, e) => s + e.amount, 0).toFixed(2)}</p></div>
+                        <div class="glassmorphism p-6 rounded-2xl"><h3 class="text-md text-[var(--text-secondary)] mb-2">Avg. Daily Spend</h3><p class="text-4xl font-bold">$${(state.expenses.reduce((s, e) => s + e.amount, 0) / 30).toFixed(2)}</p></div>
+                        <div class="glassmorphism p-6 rounded-2xl"><h3 class="text-md text-[var(--text-secondary)] mb-2">Highest Spend Day</h3><p class="text-4xl font-bold">$${Math.max(0, ...Object.values(state.expenses.reduce((acc,e)=>{acc[e.date]=(acc[e.date]||0)+e.amount; return acc;},{}))).toFixed(2)}</p></div>
+                        <div class="glassmorphism p-6 rounded-2xl"><h3 class="text-md text-[var(--text-secondary)] mb-2">Total Transactions</h3><p class="text-4xl font-bold">${state.expenses.length}</p></div>
+                    </div>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0">
+                        <div class="glassmorphism p-6 rounded-2xl flex flex-col"><h3 class="text-xl font-bold mb-4">Spending Trend</h3><div class="relative flex-1 min-h-0"><canvas id="lineChart"></canvas></div></div>
+                        <div class="glassmorphism p-6 rounded-2xl flex flex-col"><h3 class="text-xl font-bold mb-4">Category Breakdown</h3><div class="relative flex-1 min-h-0"><canvas id="pieChart"></canvas></div></div>
+                        <div class="glassmorphism p-6 rounded-2xl flex flex-col"><h3 class="text-xl font-bold mb-4">Daily Spending</h3><div class="relative flex-1 min-h-0"><canvas id="barChart"></canvas></div></div>
+                    </div>
+                </div>`;
+        }
+
+        function renderChatPage() {
+             return `
+                <div class="h-full flex flex-col fade-in">
+                    <h1 class="text-4xl font-extrabold tracking-tight mb-6">AI Assistant</h1>
+                    <div class="flex-1 glassmorphism p-6 rounded-2xl flex flex-col min-h-0">
+                        <div id="chat-history" class="flex-1 space-y-4 overflow-y-auto pr-2 mb-4">
+                            ${state.chatHistory.map(msg => {
+                                const messageClass = msg.role === 'user' 
+                                    ? "flex justify-end"
+                                    : "flex justify-start";
+                                const bubbleClass = msg.role === 'user'
+                                    ? "bg-[var(--accent)] text-[var(--accent-text)]"
+                                    : "bg-[var(--surface)]";
+                                const formattedContent = msg.role === 'ai' ? simpleMarkdownToHTML(msg.content) : msg.content;
+                                return `<div class="${messageClass}"><div class="max-w-md p-4 rounded-xl ${bubbleClass}">${formattedContent}</div></div>`;
+                            }).join('')}
+                        </div>
+                        <div class="mt-auto">
+                            <div class="flex">
+                                <input id="chat-input" type="text" placeholder="Type your message..." class="flex-1 bg-[var(--surface)] border border-[var(--border-color)] rounded-l-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/>
+                                <button id="chat-send-btn" class="bg-[var(--accent)] p-3 rounded-r-lg text-[var(--accent-text)] hover:opacity-90 transition-colors">${getIcon('send', 'w-6 h-6')}</button>
+                            </div>
+                            <div class="flex gap-2 mt-2 flex-wrap">
+                                ${["How much on groceries?", "Most expensive purchase?", "Log a $15 taxi ride."].map(p => `<button class="chat-prompt-btn text-xs bg-[var(--surface)] py-1 px-3 rounded-full hover:bg-[var(--accent)] hover:text-[var(--accent-text)] transition-colors border border-[var(--border-color)]">${p}</button>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function renderProfilePage() {
+            const profile = state.userProfile;
+            if(!profile) return `<p>Loading profile...</p>`;
+
+            const detailItem = (label, value) => `<div class="py-4 sm:grid sm:grid-cols-3 sm:gap-4"><dt class="text-sm font-medium text-[var(--text-secondary)]">${label}</dt><dd class="mt-1 text-sm sm:mt-0 sm:col-span-2">${value || 'Not set'}</dd></div>`;
+            
+            const viewMode = `
+                <div>
+                    <h3 class="text-lg leading-6 font-medium text-[var(--text-primary)]">Profile Information</h3>
+                    <p class="mt-1 max-w-2xl text-sm text-[var(--text-secondary)]">Personal details and financial goals.</p>
+                </div>
+                <div class="mt-5 border-t border-[var(--border-color)]">
+                    <dl class="divide-y divide-[var(--border-color)]">
+                        ${detailItem('Full Name', profile.name)}
+                        ${detailItem('Username', profile.username)}
+                        ${detailItem('Email address', profile.email)}
+                        ${detailItem('Monthly Savings Goal', `$${profile.savings_goal}`)}
+                        ${detailItem('Financial Goals', `<p class="whitespace-pre-wrap">${profile.financial_goals}</p>`)}
+                    </dl>
+                </div>`;
+
+            const editMode = `
+                <form id="profile-edit-form" class="space-y-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <div><label for="name" class="block text-sm font-medium text-[var(--text-secondary)]">Full Name</label><input type="text" name="name" id="name" value="${profile.name}" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></div>
+                        <div><label for="username" class="block text-sm font-medium text-[var(--text-secondary)]">Username</label><input type="text" name="username" id="username" value="${profile.username}" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></div>
+                        <div class="sm:col-span-2"><label for="email" class="block text-sm font-medium text-[var(--text-secondary)]">Email Address</label><input type="email" name="email" id="email" value="${profile.email}" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></div>
+                        <div><label for="password" class="block text-sm font-medium text-[var(--text-secondary)]">New Password</label><input type="password" name="password" id="password" placeholder="Leave blank to keep current" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></div>
+                        <div><label for="confirm_password" class="block text-sm font-medium text-[var(--text-secondary)]">Confirm New Password</label><input type="password" id="confirm_password" name="confirm_password" placeholder="Confirm new password" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></div>
+                        <div class="sm:col-span-2"><label for="savings_goal" class="block text-sm font-medium text-[var(--text-secondary)]">Monthly Savings Goal</label><input type="number" name="savings_goal" id="savings_goal" value="${profile.savings_goal}" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/></div>
+                        <div class="sm:col-span-2"><label for="financial_goals" class="block text-sm font-medium text-[var(--text-secondary)]">Financial Goals</label><textarea id="financial_goals" name="financial_goals" rows="4" class="mt-1 block w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">${profile.financial_goals || ''}</textarea></div>
+                    </div>
+                    <div id="profile-error" class="text-sm text-[var(--error-color)]"></div>
+                    <div class="flex justify-end gap-4">
+                        <button type="button" id="cancel-edit-btn" class="bg-transparent border border-[var(--border-color)] text-[var(--text-primary)] font-bold py-2 px-4 rounded-xl hover:bg-[var(--hover-bg)] transition-colors">Cancel</button>
+                        <button type="submit" class="bg-[var(--accent)] text-[var(--accent-text)] font-bold py-2 px-4 rounded-xl hover:opacity-90 transition-colors shadow-lg shadow-[var(--accent-light)]">Save Changes</button>
+                    </div>
+                </form>`;
+
+             return `
+                 <div class="space-y-6 fade-in">
+                    <header class="flex justify-between items-center">
+                        <h1 class="text-4xl font-extrabold tracking-tight">User Profile</h1>
+                        ${!state.isProfileEditing ? `<button id="edit-profile-btn" class="bg-[var(--accent)] text-[var(--accent-text)] font-bold py-2 px-4 rounded-xl hover:opacity-90 transition-colors">Edit Profile</button>` : ''}
+                    </header>
+                    <div class="glassmorphism p-6 rounded-2xl">
+                        ${state.isProfileEditing ? editMode : viewMode}
+                    </div>
+                    <div class="glassmorphism p-6 rounded-2xl border border-red-500/50">
+                        <h3 class="text-xl font-bold text-red-400">Danger Zone</h3>
+                        <p class="text-[var(--text-secondary)] mt-2">Deleting your account is permanent. All your expense data will be lost.</p>
+                        <div class="mt-4">
+                            <label for="delete-confirm" class="block text-sm font-medium text-[var(--text-secondary)]">To confirm, type your username: <span class="font-bold text-[var(--text-primary)]">${profile.username}</span></label>
+                            <input type="text" id="delete-confirm" placeholder="Type username to confirm" class="mt-1 block w-full sm:w-1/2 bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-red-500"/>
+                            <button id="delete-account-btn" disabled class="mt-4 bg-red-600 text-white font-bold py-2 px-4 rounded-xl opacity-50 cursor-not-allowed transition-opacity">Delete My Account</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function renderAddExpenseModal() {
+            return `<div id="modal-backdrop" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 fade-in">
+                <div class="glassmorphism w-full max-w-2xl p-8 m-4 rounded-2xl">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-3xl font-bold">Add a New Expense</h2>
+                        <button id="close-modal-btn" class="p-2 rounded-full hover:bg-[var(--hover-bg)]">${getIcon('close', 'w-6 h-6')}</button>
+                    </div>
+                    <div id="modal-content"><div id="modal-error" class="text-sm text-[var(--error-color)] mb-2"></div></div>
+                </div>
+            </div>`;
+        }
+
+        function renderModalContent(activeTab = 'upload', isProcessing = false) {
+             if (isProcessing) {
+                return `<div class="h-48 flex flex-col items-center justify-center text-center">
+                        <div class="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-[var(--accent)] mb-4"></div>
+                        <p id="processing-text" class="text-lg">Processing document...</p>
+                        <p class="text-sm text-[var(--text-secondary)]">This might take a moment.</p>
+                    </div>`;
+            }
+            const uploadContent = `<div class="h-48 border-2 border-dashed border-[var(--border-color)] rounded-lg flex flex-col items-center justify-center text-center hover:border-[var(--accent)] hover:bg-[var(--hover-bg)] transition-colors cursor-pointer relative">
+                    ${getIcon('upload', 'w-10 h-10 mb-2 text-[var(--text-secondary)]')}
+                    <p>Drag & drop your receipt image or PDF</p>
+                    <p class="text-sm text-[var(--text-secondary)]">or click to browse</p>
+                    <input type="file" id="file-upload-input" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" accept="image/*,.pdf"/>
+                </div>`;
+            const chatContent = `<div class="space-y-4">
+                    <input id="chat-expense-input" type="text" placeholder="e.g., I spent 500 on groceries at BigBasket today" class="w-full bg-[var(--surface)] border border-[var(--border-color)] rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"/>
+                    <button id="chat-expense-submit" class="w-full bg-[var(--accent)] text-[var(--accent-text)] font-bold py-3 px-6 rounded-xl hover:opacity-90 transition-colors">Save Expense</button>
+                </div>`;
+            return `<div class="flex border-b border-[var(--border-color)] mb-6">
+                    <button data-tab="upload" class="modal-tab-btn px-4 py-2 text-lg font-semibold border-b-2 transition-colors ${activeTab === 'upload' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}">Upload Receipt</button>
+                    <button data-tab="chat" class="modal-tab-btn px-4 py-2 text-lg font-semibold border-b-2 transition-colors ${activeTab === 'chat' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}">Chat with AI</button>
+                </div><div>${activeTab === 'upload' ? uploadContent : chatContent}</div>`;
+        }
+        
+        function renderDashboardCharts() {
+            const pieCtx = document.getElementById('dashboardPieChart')?.getContext('2d');
+            if (!pieCtx) return;
+            new Chart(pieCtx, {
+                type: 'doughnut', data: { labels: Object.keys(state.expenses.reduce((acc, e) => { acc[e.category] = 1; return acc; }, {})), datasets: [{ data: Object.values(state.expenses.reduce((acc, e) => { acc[e.category] = (acc[e.category] || 0) + e.amount; return acc; }, {})), backgroundColor: ["#00E5C0", "#00BFA5", "#A7F3D0", "#6EE7B7", "#34D399"], borderColor: 'var(--surface)', borderWidth: 4 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+            });
+        }
+
+        function renderAnalyticsCharts() {
+            const lineCtx = document.getElementById('lineChart')?.getContext('2d');
+            const pieCtx = document.getElementById('pieChart')?.getContext('2d');
+            const barCtx = document.getElementById('barChart')?.getContext('2d');
+            if (!lineCtx || !pieCtx || !barCtx) return;
+
+            ['lineChart', 'pieChart', 'barChart'].forEach(chart => { if (state[chart]) state[chart].destroy(); });
+
+            const chartColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-color');
+            const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+            const surfaceColor = getComputedStyle(document.documentElement).getPropertyValue('--surface');
+            
+            const dailyTotals = state.expenses.reduce((acc, e) => { const date = new Date(e.date).toISOString().split('T')[0]; acc[date] = (acc[date] || 0) + e.amount; return acc; }, {});
+            const sortedDates = Object.keys(dailyTotals).sort((a,b) => new Date(a) - new Date(b));
+            
+            state.lineChart = new Chart(lineCtx, {
+                type: 'line', data: { labels: sortedDates, datasets: [{ label: 'Amount', data: sortedDates.map(d => dailyTotals[d]), borderColor: accentColor, backgroundColor: 'rgba(0, 229, 192, 0.1)', tension: 0.4, fill: true }] },
+                options: { responsive: true, maintainAspectRatio: false, color: chartColor, scales: { x: { type: 'time', time: { unit: 'day' }, ticks: { color: chartColor } }, y: { ticks: { color: chartColor } } }, plugins: { legend: { display: false } } }
+            });
+            
+            const categoryMap = state.expenses.reduce((acc, e) => { acc[e.category] = (acc[e.category] || 0) + e.amount; return acc; }, {});
+            state.pieChart = new Chart(pieCtx, {
+                type: 'doughnut', data: { labels: Object.keys(categoryMap), datasets: [{ data: Object.values(categoryMap), backgroundColor: ["#00E5C0", "#00BFA5", "#A7F3D0", "#6EE7B7", "#34D399"], borderColor: surfaceColor, borderWidth: 4 }] },
+                options: { responsive: true, maintainAspectRatio: false, color: chartColor, plugins: { legend: { position: 'right', labels: { color: chartColor } } } }
+            });
+
+            state.barChart = new Chart(barCtx, {
+                type: 'bar', data: { labels: sortedDates, datasets: [{ label: 'Daily Spend', data: sortedDates.map(d => dailyTotals[d]), backgroundColor: accentColor, borderRadius: 5 }] },
+                options: { responsive: true, maintainAspectRatio: false, color: chartColor, scales: { x: { type: 'time', time: { unit: 'day' }, ticks: { color: chartColor } }, y: { ticks: { color: chartColor } } }, plugins: { legend: { display: false } } }
+            });
+        }
+        
+        // --- Event Handlers ---
+        function attachAuthEventListeners() {
+            const form = document.getElementById('auth-form');
+            const toggle = document.getElementById('auth-toggle');
+            if(!form || !toggle) return;
+            const isLogin = !document.getElementById('name');
+            
+            form.onsubmit = (e) => { e.preventDefault(); isLogin ? handleLogin() : handleRegister(); };
+            toggle.onclick = () => {
+                document.getElementById('app').innerHTML = renderAuthPage(!isLogin);
+                attachAuthEventListeners();
+            };
+        }
+
+        function attachAppEventListeners() {
+            document.querySelectorAll('.nav-button, #profile-button').forEach(btn => { btn.onclick = () => { if(state.page !== btn.dataset.page) { state.page = btn.dataset.page; render(); } }; });
+            document.getElementById('theme-toggle').onclick = () => { state.theme = state.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('theme', state.theme); document.documentElement.dataset.theme = state.theme; render(); };
+            document.getElementById('logout-btn').onclick = handleLogout;
+            document.getElementById('open-modal-btn')?.addEventListener('click', () => { state.isModalOpen = true; render(); document.querySelector('#modal-content').insertAdjacentHTML('beforeend', renderModalContent()); attachModalEventListeners(); });
+            document.getElementById('chat-send-btn')?.addEventListener('click', handleMainChatSend);
+            document.getElementById('chat-input')?.addEventListener('keypress', e => e.key === 'Enter' && handleMainChatSend());
+            document.querySelectorAll('.chat-prompt-btn').forEach(btn => { btn.onclick = () => { document.getElementById('chat-input').value = btn.innerText; document.getElementById('chat-input').focus(); }; });
+            document.getElementById('analytics-filter')?.addEventListener('change', (e) => fetchExpenses(e.target.value));
+            
+            // Profile Page Listeners
+            document.getElementById('edit-profile-btn')?.addEventListener('click', () => { state.isProfileEditing = true; render(); });
+            document.getElementById('cancel-edit-btn')?.addEventListener('click', () => { state.isProfileEditing = false; render(); });
+            document.getElementById('profile-edit-form')?.addEventListener('submit', (e) => { e.preventDefault(); handleProfileUpdate(); });
+
+            const deleteConfirmInput = document.getElementById('delete-confirm');
+            if(deleteConfirmInput) {
+                deleteConfirmInput.oninput = (e) => {
+                    const deleteBtn = document.getElementById('delete-account-btn');
+                    const enabled = e.target.value === state.userProfile.username;
+                    deleteBtn.disabled = !enabled;
+                    deleteBtn.classList.toggle('opacity-50', !enabled);
+                    deleteBtn.classList.toggle('cursor-not-allowed', !enabled);
+                };
+            }
+            document.getElementById('delete-account-btn')?.addEventListener('click', handleProfileDelete);
+            document.getElementById('expenses-table-body')?.addEventListener('click', (e) => {
+                if (e.target.classList.contains('edit-expense-btn')) {
+                    state.editingExpenseId = parseInt(e.target.dataset.id);
+                    render();
+                } else if (e.target.classList.contains('cancel-edit-btn')) {
+                    state.editingExpenseId = null;
+                    render();
+                } else if (e.target.classList.contains('save-expense-btn')) {
+                    const id = parseInt(e.target.dataset.id);
+                    handleSaveExpense(id);
+                }
+            });
+        }
+
+        async function handleSaveExpense(id) {
+            const payload = {
+                expence_name: document.getElementById(`edit-name-${id}`).value,
+                category: document.getElementById(`edit-category-${id}`).value,
+                amount: parseFloat(document.getElementById(`edit-amount-${id}`).value),
+                // The date from a date input is already in YYYY-MM-DD format
+                date: document.getElementById(`edit-date-${id}`).value
+            };
+
+            try {
+                const updatedExpense = await apiCall(`/expense/${id}`, 'PUT', payload);
+                const index = state.expenses.findIndex(exp => exp.id === id);
+                if (index !== -1) {
+                    state.expenses[index] = updatedExpense;
+                }
+                state.editingExpenseId = null;
+                showToast("Expense updated successfully!");
+                render();
+            } catch (error) {
+                showToast(`Failed to update expense: ${error.message}`, true);
+            }
+        }
+
+            // Expense table listeners
+            document.getElementById('expenses-table-body')?.addEventListener('click', (e) => {
+                if (e.target.classList.contains('edit-expense-btn')) {
+                    state.editingExpenseId = parseInt(e.target.dataset.id);
+                    render();
+                } else if (e.target.classList.contains('cancel-edit-btn')) {
+                    state.editingExpenseId = null;
+                    render();
+                } else if (e.target.classList.contains('save-expense-btn')) {
+                    const id = parseInt(e.target.dataset.id);
+                    handleSaveExpense(id);
+                }
+            });
+        
+
+        function attachModalEventListeners() {
+            document.getElementById('close-modal-btn').onclick = closeModal;
+            document.getElementById('modal-backdrop').onclick = (e) => { if(e.target.id === 'modal-backdrop') closeModal(); };
+            document.querySelectorAll('.modal-tab-btn').forEach(btn => { btn.onclick = () => { document.querySelector('#modal-content').innerHTML = `<div id="modal-error" class="text-sm text-[var(--error-color)] mb-2"></div>` + renderModalContent(btn.dataset.tab); attachModalEventListeners(); }; });
+            document.getElementById('file-upload-input')?.addEventListener('change', e => handleFileProcess(e.target.files[0]));
+            document.getElementById('chat-expense-submit')?.addEventListener('click', handleChatExpenseSubmit);
+        }
+
+        // --- Logic handlers ---
+        async function handleLogin() {
+            const login = document.getElementById('login').value;
+            const password = document.getElementById('password').value;
+            try {
+                const data = await apiCall(`/auth/login_human`, 'POST', { login, password });
+                state.authToken = data.access_token;
+                localStorage.setItem('authToken', state.authToken);
+                await initializeUserSession();
+                showToast("Login successful!");
+            } catch (error) { /* Toast is shown in apiCall */ }
+        }
+        
+        async function handleRegister() {
+            const name = document.getElementById('name').value;
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('login').value; // Using login field for email
+            const password = document.getElementById('password').value;
+            try {
+                await apiCall(`/auth/register`, 'POST', { name, email, username, password, savings_goal: 0.0, financial_goals: "" });
+                document.getElementById('app').innerHTML = renderAuthPage(true, "Registration successful! Please log in.", false);
+                attachAuthEventListeners();
+            } catch (error) { /* Toast is shown in apiCall */ }
+        }
+        
+        function handleLogout() {
+            state = { ...state, authToken: null, userId: null, userName: 'Guest', isLoggedIn: false, expenses: [], userProfile: null, isProfileEditing: false };
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('userId');
+            render();
+            showToast("You have been logged out.");
+        }
+
+        async function handleProfileUpdate() {
+            const form = document.getElementById('profile-edit-form');
+            const formData = new FormData(form);
+            const payload = Object.fromEntries(formData.entries());
+            if (payload.password && payload.password !== payload.confirm_password) {
+                document.getElementById('profile-error').innerText = "Passwords do not match.";
+                return;
+            }
+            if (!payload.password) delete payload.password;
+            delete payload.confirm_password;
+            payload.savings_goal = parseFloat(payload.savings_goal) || 0;
+            
+            try {
+                const updatedProfile = await apiCall('/me/profile', 'PUT', payload);
+                state.userProfile = updatedProfile;
+                state.userName = updatedProfile.name;
+                state.isProfileEditing = false;
+                showToast("Profile updated successfully!");
+                render();
+            } catch (error) {
+                document.getElementById('profile-error').innerText = error.message;
+            }
+        }
+        
+        async function handleProfileDelete() {
+            try {
+                await apiCall('/me/profile', 'DELETE');
+                showToast("Account deleted successfully.");
+                handleLogout();
+            } catch (error) { /* Handled in apiCall */ }
+        }
+
+        function closeModal() { state.isModalOpen = false; render(); }
+
+        async function handleFileProcess(file) {
+            if (!file) return;
+            const modalContent = document.getElementById('modal-content');
+            modalContent.innerHTML = renderModalContent('upload', true);
+            
+            try {
+                document.getElementById('processing-text').innerText = 'Extracting data...';
+                const formData = new FormData();
+                formData.append('file', file);
+                const extractedData = await apiCall('/extract', 'POST', formData, true);
+                
+                document.getElementById('processing-text').innerText = 'Saving expenses...';
+                await apiCall(`/insert_expenses?user_id=${state.userId}`, 'POST', { "items": extractedData.items });
+                
+                await fetchExpenses();
+                closeModal();
+                showToast("Expenses added successfully from receipt!");
+            } catch (error) {
+                const modalError = document.getElementById('modal-error');
+                if (modalError) modalError.innerText = error.message;
+                modalContent.innerHTML += renderModalContent('upload');
+                attachModalEventListeners();
+            }
+        }
+
+        async function handleChatExpenseSubmit() {
+            const input = document.getElementById('chat-expense-input').value;
+            if (!input.trim()) return;
+            
+            document.getElementById('modal-content').innerHTML = renderModalContent('chat', true);
+            document.getElementById('processing-text').innerText = 'Processing your expense...';
+            
+            try {
+                const amountMatch = input.match(/(\$|rs|inr|usd|aud)?\s*(\d+(\.\d+)?)/);
+                const expense = {
+                    amount: amountMatch ? parseFloat(amountMatch[2]) : 0,
+                    category: 'Chat Entry',
+                    expence_name: input.substring(0, 50),
+                    date: new Date().toISOString().split('T')[0]
+                };
+                await apiCall(`/insert_expenses?user_id=${state.userId}`, 'POST', { items: [expense] });
+                await fetchExpenses();
+                closeModal();
+                showToast("Expense added via AI chat!");
+            } catch(error) {
+                const modalError = document.getElementById('modal-error');
+                if (modalError) modalError.innerText = error.message;
+                document.querySelector('#modal-content').innerHTML += renderModalContent('chat');
+                attachModalEventListeners();
+            }
+        }
+
+        async function handleMainChatSend(){
+            const input = document.getElementById('chat-input');
+            const userMessage = input.value.trim();
+            if(!userMessage) return;
+
+            state.chatHistory.push({ role: 'user', content: userMessage });
+            input.value = '';
+            render();
+
+            // Add typing indicator
+            state.chatHistory.push({ role: 'ai', content: '...', isTyping: true });
+            render();
+            document.getElementById('chat-history').scrollTop = document.getElementById('chat-history').scrollHeight;
+
+            try {
+                const data = await apiCall('/chat', 'POST', { message: userMessage });
+                state.chatHistory = state.chatHistory.filter(m => !m.isTyping);
+                state.chatHistory.push({ role: 'ai', content: data.reply });
+            } catch (error) {
+                state.chatHistory = state.chatHistory.filter(m => !m.isTyping);
+                state.chatHistory.push({ role: 'ai', content: `Error: ${error.message}` });
+            }
+            render();
+            document.getElementById('chat-history').scrollTop = document.getElementById('chat-history').scrollHeight;
+        }
+        
+        async function fetchExpenses(days = 30) {
+            try {
+                const data = await apiCall(`/me/expenses?days=${days}`);
+                state.expenses = data.items || [];
+                if(state.isLoggedIn) render();
+            } catch (error) { /* Handled in apiCall */ }
+        }
+
+        async function initializeUserSession() {
+            state.loading = true;
+            render();
+            try {
+                const profileData = await apiCall('/me/profile');
+                state.isLoggedIn = true;
+                state.userId = profileData.user_id;
+                state.userName = profileData.user_name;
+                state.userProfile = profileData.profile;
+                await fetchExpenses();
+
+                // Fetch chat history
+                const chatHistoryData = await apiCall('/chat/history');
+                if (chatHistoryData && chatHistoryData.length > 0) {
+                    state.chatHistory = chatHistoryData;
+                } else {
+                    state.chatHistory = [{ role: 'ai', content: "Hello! How can I help you with your finances today?" }];
+                }
+
+                // Check for first-time login onboarding
+                if (!state.userProfile.has_completed_onboarding) {
+                    state.isOnboardingModalOpen = true;
+                }
+            } catch (error) {
+                handleLogout(); // If profile fetch fails, token is likely invalid.
+            } finally {
+                state.loading = false;
+                render();
+            }
+        }
+        
+        function main() {
+            if (state.authToken) {
+                initializeUserSession();
+            } else {
+                state.loading = false;
+                render();
+            }
+        }
+
+        main();
+    </script>
+</body>
+</html>
+
